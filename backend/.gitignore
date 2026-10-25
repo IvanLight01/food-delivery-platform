@@ -1,0 +1,20 @@
+# Виртуальное окружение
+.venv/
+
+# Переменные окружения и пароли
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Django
+db.sqlite3
+
+# IDE
+.idea/
+.vscode/
+
+# Системные файлы
+.DS_Store
+Thumbs.db

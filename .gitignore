@@ -1,0 +1,43 @@
+
+# Секреты и переменные окружения
+.env
+.env.*
+!.env.example
+
+# Виртуальные окружения Python
+.venv/
+venv/
+env/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+
+# Служебные файлы PyCharm
+.idea/
+
+# Локальные базы данных
+*.sqlite3
+
+# Логи
+*.log
+
+# Загруженные файлы и локальные медиа
+media/
+
+# Собранные статические файлы Django
+staticfiles/
+
+# Frontend — зависимости и сборка
+node_modules/
+dist/
+build/
+
+# Временные файлы
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Операционная система
+.DS_Store
+Thumbs.db
