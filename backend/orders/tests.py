@@ -4,17 +4,22 @@
 # F — тест выполнился, но проверка не прошла.
 # . — тест успешно пройден.
 
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from unittest.mock import patch
+from django.db import close_old_connections
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from decimal import Decimal
 from .models import Order, OrderItem
+from .views import OrderViewSet
 from menu.models import Category, Product
 
 
 User = get_user_model()
 
-
+""" Тесты на определение разрешений """
 class OrderPermissionTests(TestCase):
 
     def setUp(self):
@@ -49,7 +54,7 @@ class OrderPermissionTests(TestCase):
             status='COMPLETED'
         )
 
-        # Создаём клиент для отправки API-запросов
+        # Создаём инструмент APIClient для отправки API-запросов
         self.client = APIClient()
 
     """ Запрет изменения завершённого заказа """
@@ -331,4 +336,268 @@ class OrderPermissionTests(TestCase):
         self.assertEqual(
             item.price,
             Decimal('900.00')
+        )
+
+    """ Защита от повторного последовательного запроса """
+    def test_repeated_order_request_returns_same_order(self):
+            """Повторный запрос с тем же ключом не должен создавать второй заказ."""
+            # Создаём категорию и блюдо
+            category = Category.objects.create(
+                name='Основные блюда'
+            )
+
+            product = Product.objects.create(
+                category=category,
+                name='Лазанья',
+                price=Decimal('900.00'),
+                is_active=True
+            )
+
+            # Авторизуем клиента
+            self.client.force_authenticate(user=self.customer)
+
+            # Данные заказа
+            data = {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {
+                        'product': product.id,
+                        'quantity': 2
+                    }
+                ]
+            }
+
+            # Запоминаем количество существующих заказов
+            count_before = Order.objects.filter(
+                customer=self.customer
+            ).count()
+
+            # Отправляем первый запрос
+            response1 = self.client.post(
+                '/api/orders/',
+                data,
+                format='json',
+                HTTP_IDEMPOTENCY_KEY='test-order-123'
+            )
+
+            # Повторяем запрос с тем же ключом
+            response2 = self.client.post(
+                '/api/orders/',
+                data,
+                format='json',
+                HTTP_IDEMPOTENCY_KEY='test-order-123'
+            )
+
+            # Проверяем ответы
+            self.assertEqual(response1.status_code, 201)
+            self.assertEqual(response2.status_code, 200)
+
+            # Оба ответа должны указывать на один заказ
+            self.assertEqual(
+                response1.data['id'],
+                response2.data['id']
+            )
+
+            # Проверяем количество заказов в базе
+            count_after = Order.objects.filter(
+                customer=self.customer
+            ).count()
+
+            self.assertEqual(count_after, count_before + 1)
+
+    """ Ответ 409 при повторном ключе с другими данными """
+    def test_same_key_with_different_data_returns_409(self):
+        """Один ключ нельзя использовать для разных заказов."""
+        category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            is_active=True
+        )
+
+        self.client.force_authenticate(user=self.customer)
+
+        first_data = {
+            'delivery_address': 'ул. Пушкина, 10',
+            'items': [
+                {'product': product.id, 'quantity': 2}
+            ]
+        }
+
+        second_data = {
+            'delivery_address': 'ул. Пушкина, 10',
+            'items': [
+                {'product': product.id, 'quantity': 5}
+            ]
+        }
+
+        count_before = Order.objects.count()
+
+        response1 = self.client.post(
+            '/api/orders/',
+            first_data,
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='conflict-test-123'
+        )
+
+        response2 = self.client.post(
+            '/api/orders/',
+            second_data,
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='conflict-test-123'
+        )
+
+        self.assertEqual(response1.status_code, 201)
+        self.assertEqual(response2.status_code, 409)
+
+        self.assertEqual(
+            Order.objects.count(),
+            count_before + 1
+        )
+
+
+""" Тесты на параллельное выполнение заказов """
+class OrderConcurrencyTests(TransactionTestCase):
+    """
+    Проверяем создание заказов
+    при одновременных запросах.
+    """
+
+    def setUp(self):
+        self.customer = User.objects.create_user(
+            username='concurrent_customer',
+            email='concurrent@test.example',
+            password='TestPassword123!',
+            role='CUSTOMER'
+        )
+
+        self.category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        self.product = Product.objects.create(
+            category=self.category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            is_active=True
+        )
+
+    def send_order(self, barrier):
+        # Подготавливаем подключение к базе для потока
+        close_old_connections()
+
+        try:
+            # Создаём отдельный APIClient
+            client = APIClient() # каждый поток создаёт собственный клиент
+            client.force_authenticate(user=self.customer)
+
+            data = {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {
+                        'product': self.product.id,
+                        'quantity': 2
+                    }
+                ]
+            }
+
+            # Ожидаем второй поток перед отправкой
+            barrier.wait(timeout=5)
+
+            # Отправляем запрос
+            response = client.post(
+                '/api/orders/',
+                data,
+                format='json',
+                HTTP_IDEMPOTENCY_KEY='concurrent-test-123'
+            )
+
+            return response.status_code # возвращаем HTTP-статус для последующей проверки
+
+        finally:
+            # Освобождаем подключение этого потока
+            close_old_connections()
+
+    def test_concurrent_orders_same_key(self):
+        # Создаём барьер для двух потоков
+        barrier = Barrier(2)
+
+        # Запускаем два запроса
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(self.send_order, barrier)
+                for _ in range(2)
+            ]
+
+            # Получаем результаты обоих запросов
+            statuses = [
+                future.result()
+                for future in futures
+            ]
+
+        # Проверяем HTTP-ответы
+        self.assertEqual(sorted(statuses), [200, 201])
+
+        # Проверяем, что создан только один заказ
+        self.assertEqual(
+            Order.objects.filter(
+                customer=self.customer,
+                idempotency_key='concurrent-test-123'
+            ).count(),
+            1
+        )
+
+    def test_race_condition_same_key(self):
+        """Оба запроса проверяют ключ до создания заказа."""
+
+        # Барьер перед отправкой запросов
+        start_barrier = Barrier(2)
+
+        # Барьер после поиска существующего заказа
+        find_barrier = Barrier(2)
+
+        # Сохраняем настоящий метод поиска
+        original_find = OrderViewSet.find_order_by_key
+
+        def synchronized_find(view, key):
+            # Реально обращаемся к PostgreSQL
+            result = original_find(view, key)
+
+            # Если заказ не найден, ждём второй поток
+            if result is None:
+                find_barrier.wait(timeout=10)
+
+            return result
+
+        # Временно добавляем синхронизацию в поиск
+        with patch.object(
+                OrderViewSet,
+                'find_order_by_key',
+                synchronized_find
+        ):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(self.send_order, start_barrier)
+                    for _ in range(2)
+                ]
+
+                statuses = [
+                    future.result()
+                    for future in futures
+                ]
+
+        # Один запрос создаёт заказ, второй получает существующий
+        self.assertEqual(sorted(statuses), [200, 201])
+
+        # В базе должен находиться ровно один заказ
+        self.assertEqual(
+            Order.objects.filter(
+                customer=self.customer,
+                idempotency_key='concurrent-test-123'
+            ).count(),
+            1
         )

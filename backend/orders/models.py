@@ -2,6 +2,8 @@ from django.db import models
 from django.conf import settings
 
 
+
+
 """ ЗАКАЗ КЛИЕНТА """
 class Order(models.Model):
 
@@ -20,6 +22,22 @@ class Order(models.Model):
         on_delete=models.PROTECT,
         related_name='orders',
         verbose_name='Клиент',
+    )
+
+    # Идемпотентный ключ
+    idempotency_key = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        verbose_name='Ключ идемпотентности',
+    )
+
+    # Отпечаток запроса
+    request_hash = models.CharField(
+        max_length=64, # SHA-256 в шестнадцатеричном представлении даёт строку из 64 символов.
+        null=True,
+        blank=True,
+        verbose_name='Отпечаток запроса',
     )
 
     # Адрес пока храним обычным текстом.
@@ -51,6 +69,15 @@ class Order(models.Model):
         auto_now=True,
         verbose_name='Дата изменения',
     )
+
+    class Meta:
+        # PostgreSQL будет контролировать уникальность сочетания двух значений: клиента и ключа.
+        constraints = [
+            models.UniqueConstraint(
+                fields=['customer', 'idempotency_key'],
+                name='unique_customer_idempotency_key',
+            ),
+        ]
 
     def __str__(self):
         return f'Заказ №{self.pk} — {self.customer.username}'
