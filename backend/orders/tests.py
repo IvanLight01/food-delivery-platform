@@ -416,6 +416,97 @@ class OrderPermissionTests(TestCase):
             'Idempotency-Key header is required.'
         )
 
+    """ Тестирование граничного значения ключа """
+    def test_create_order_with_too_long_idempotency_key_returns_400(self):
+        """Ключ длиннее 100 символов должен отклоняться."""
+
+        self.client.force_authenticate(user=self.customer)
+
+        # Создаём ключ длиной 101 символ
+        long_key = 'a' * 101
+
+        count_before = Order.objects.count()
+
+        response = self.client.post(
+            '/api/orders/',
+            {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': []
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY=long_key
+        )
+
+        # Сервер должен отклонить слишком длинный ключ
+        self.assertEqual(response.status_code, 400)
+
+        # Заказ не должен появиться в базе
+        self.assertEqual(
+            Order.objects.count(),
+            count_before
+        )
+
+        # Проверяем конкретную причину ошибки
+        self.assertEqual(
+            response.data['detail'],
+            'Idempotency-Key must not exceed 100 characters.'
+        )
+
+    """ Проверяет: успешное создание заказа,
+        появление одной записи в базе 
+        и сохранение полного ключа без обрезания """
+    def test_create_order_with_100_character_idempotency_key(self):
+        """Ключ длиной ровно 100 символов должен приниматься."""
+
+        # Подготавливаем блюдо
+        category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            is_active=True
+        )
+
+        # Авторизуем покупателя
+        self.client.force_authenticate(user=self.customer)
+
+        # Создаём ключ ровно из 100 символов
+        key = 'a' * 100
+
+        count_before = Order.objects.count()
+
+        response = self.client.post(
+            '/api/orders/',
+            {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {
+                        'product': product.id,
+                        'quantity': 2
+                    }
+                ]
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY=key
+        )
+
+        # Запрос должен успешно создать заказ
+        self.assertEqual(response.status_code, 201)
+
+        # Проверяем, что появился ровно один заказ
+        self.assertEqual(
+            Order.objects.count(),
+            count_before + 1
+        )
+
+        # Проверяем, что ключ сохранился полностью
+        order = Order.objects.get(id=response.data['id'])
+        self.assertEqual(order.idempotency_key, key)
+
+
     """ Защита от повторного последовательного запроса """
     def test_repeated_order_request_returns_same_order(self):
             """Повторный запрос с тем же ключом не должен создавать второй заказ."""

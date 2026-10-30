@@ -46,6 +46,12 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {'detail': 'Idempotency-Key header is required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        # Проверяем максимальную длину ключа
+        if len(key) > 100:
+            return Response(
+           {'detail': 'Idempotency-Key must not exceed 100 characters.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         if key:
             existing_order = self.find_order_by_key(key)
