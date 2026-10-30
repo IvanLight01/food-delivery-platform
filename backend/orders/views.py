@@ -40,6 +40,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         # Получаем ключ идемпотентности из HTTP-запросов
         key = request.headers.get('Idempotency-Key')
 
+        # Запрещаем создавать заказ без ключа идемпотентности
+        if not key or not key.strip():
+            return Response(
+                {'detail': 'Idempotency-Key header is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         if key:
             existing_order = self.find_order_by_key(key)
 

@@ -316,7 +316,8 @@ class OrderPermissionTests(TestCase):
                     }
                 ]
             },
-            format='json'
+            format='json',
+            HTTP_IDEMPOTENCY_KEY = 'price-protection-test-123' # отправляем запрос с ключом, чтоб тест проверял именно цену, а не отсутстствие заголовка с ключом
         )
 
         # Заказ должен успешно создаться
@@ -336,6 +337,83 @@ class OrderPermissionTests(TestCase):
         self.assertEqual(
             item.price,
             Decimal('900.00')
+        )
+
+    """ Защита от создания заказа без Idempotency-Key
+        и проверка, что кол-во заказов не изменилось """
+    def test_create_order_without_idempotency_key_returns_400(self):
+        """Без Idempotency-Key заказ не должен создаваться."""
+
+        category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            is_active=True
+        )
+
+        self.client.force_authenticate(user=self.customer)
+
+        data = {
+            'delivery_address': 'ул. Пушкина, 10',
+            'items': [
+                {
+                    'product': product.id,
+                    'quantity': 2
+                }
+            ]
+        }
+
+        count_before = Order.objects.count()
+
+        # Намеренно НЕ передаём HTTP_IDEMPOTENCY_KEY
+        response = self.client.post(
+            '/api/orders/',
+            data,
+            format='json'
+        )
+
+        # Сервер должен отклонить запрос
+        self.assertEqual(response.status_code, 400)
+
+        # В базе не должно появиться нового заказа
+        self.assertEqual(
+            Order.objects.count(),
+            count_before
+        )
+
+
+    """ Запрет на создание заказа, если был обнаружен ключ из пробелов """
+    def test_create_order_with_blank_idempotency_key_returns_400(self):
+        """Ключ из пробелов не должен разрешать создание заказа."""
+
+        self.client.force_authenticate(user=self.customer)
+
+        count_before = Order.objects.count()
+
+        response = self.client.post(
+            '/api/orders/',
+            {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': []
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='   '
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+        self.assertEqual(
+            Order.objects.count(),
+            count_before
+        )
+
+        self.assertEqual(
+            response.data['detail'],
+            'Idempotency-Key header is required.'
         )
 
     """ Защита от повторного последовательного запроса """
@@ -463,8 +541,8 @@ class OrderPermissionTests(TestCase):
 """ Тесты на параллельное выполнение заказов """
 class OrderConcurrencyTests(TransactionTestCase):
     """
-    Проверяем создание заказов
-    при одновременных запросах.
+    Проверяем создание заказов при одновременных запросах.
+
     """
 
     def setUp(self):
@@ -522,6 +600,7 @@ class OrderConcurrencyTests(TransactionTestCase):
             # Освобождаем подключение этого потока
             close_old_connections()
 
+    """ Проверка одновременного создания заказов с одинаковым ключом """
     def test_concurrent_orders_same_key(self):
         # Создаём барьер для двух потоков
         barrier = Barrier(2)
@@ -551,6 +630,7 @@ class OrderConcurrencyTests(TransactionTestCase):
             1
         )
 
+    """ Проверка состояния гонки при создании заказов """
     def test_race_condition_same_key(self):
         """Оба запроса проверяют ключ до создания заказа."""
 
