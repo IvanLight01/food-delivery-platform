@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Order, OrderItem
 from django.db import transaction
+from collections import defaultdict
 from menu.models import Product
 
 
@@ -51,12 +52,22 @@ class OrderSerializer(serializers.ModelSerializer):
         # Проверяем каждое блюдо в заказе
         for item in items:
             product = item['product']
+            requested_quantity = item['quantity']
 
             # Нельзя заказывать блюда, снятые с продажи
             if not product.is_active:
                 raise serializers.ValidationError(
                     f'Блюдо "{product.name}" недоступно для заказа.'
                 )
+
+            # None означает неограниченный остаток
+            if product.quantity is not None:
+                # Проверяем, хватает ли порций
+                if requested_quantity > product.quantity:
+                    raise serializers.ValidationError(
+                        f'Недостаточно порций блюда "{product.name}". '
+                        f'Доступно: {product.quantity}.'
+                    )
 
         return items
 
@@ -70,6 +81,50 @@ class OrderSerializer(serializers.ModelSerializer):
         items_data = validated_data.pop('items')
         # Извлекаем пользователя из контекста запроса
         user = self.context['request'].user
+
+        # Суммируем количество одинаковых продуктов
+        requested = defaultdict(int)
+
+        for item_data in items_data:
+            product_id = item_data['product'].id
+            requested[product_id] += item_data['quantity']
+
+        # Блокируем продукты в одинаковом порядке,
+        # чтобы уменьшить риск взаимных блокировок
+        products = {
+            product.id: product
+            for product in Product.objects
+            .select_for_update() # метод Django ORM, который запрашивает блокировку строк базы данных до завершения транзакции.
+            .filter(id__in=requested)
+            .order_by('id')
+        }
+
+        # Проверяем актуальные остатки и активность
+        for product_id, quantity in requested.items():
+            product = products[product_id]
+
+            if not product.is_active:
+                raise serializers.ValidationError(
+                    f'Блюдо "{product.name}" недоступно для заказа.'
+                )
+
+            if product.quantity is not None and quantity > product.quantity:
+                raise serializers.ValidationError(
+                    f'Недостаточно порций блюда "{product.name}". '
+                    f'Доступно: {product.quantity}.'
+                )
+
+        # Обновляем данные продуктов для дальнейшего создания заказа
+        for item_data in items_data:
+            item_data['product'] = products[item_data['product'].id]
+
+        # Списываем остатки
+        for product_id, quantity in requested.items():
+            product = products[product_id]
+
+            if product.quantity is not None:
+                product.quantity -= quantity
+                product.save(update_fields=['quantity'])
 
         # Создаем пустой заказ
         order = Order.objects.create(customer=user, **validated_data)

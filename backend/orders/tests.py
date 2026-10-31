@@ -628,6 +628,261 @@ class OrderPermissionTests(TestCase):
             count_before + 1
         )
 
+    """ Запрет на заказ блюда, если установлен is_active=False,
+        при этом блюда в наличии есть. """
+    def test_customer_cannot_order_inactive_product(self):
+        """Покупатель не должен заказывать неактивное блюдо."""
+
+        # Создаём категорию
+        category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        # Создаём блюдо, которое недоступно для заказа
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            quantity=10,
+            is_active=False
+        )
+
+        # Авторизуем покупателя
+        self.client.force_authenticate(user=self.customer)
+
+        # Запоминаем количество заказов
+        count_before = Order.objects.count()
+
+        # Пытаемся заказать неактивное блюдо
+        response = self.client.post(
+            '/api/orders/',
+            {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {
+                        'product': product.id,
+                        'quantity': 2
+                    }
+                ]
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='inactive-product-test-123'
+        )
+
+        # Сервер должен отклонить заказ
+        self.assertEqual(response.status_code, 400)
+
+        # Проверяем, что сервер отклонил именно неактивное блюдо
+        self.assertIn(
+            'недоступно для заказа',
+            str(response.data['items'])
+        )
+
+        # В базе не должно появиться нового заказа
+        self.assertEqual(
+            Order.objects.count(),
+            count_before
+        )
+
+    """ Завпрет на заказ больше чем установленно в quantity.
+        И не допустимость создания заказа. """
+    def test_customer_cannot_order_more_than_available(self):
+        """Нельзя заказать больше порций, чем есть в наличии."""
+
+        category = Category.objects.create(name='Основные блюда')
+
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            quantity=3,
+            is_active=True
+        )
+
+        self.client.force_authenticate(user=self.customer)
+
+        count_before = Order.objects.count()
+
+        response = self.client.post(
+            '/api/orders/',
+            {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {'product': product.id, 'quantity': 5}
+                ]
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='stock-test-123'
+        )
+
+        # Ожидаем отказ
+        self.assertEqual(response.status_code, 400)
+
+        # Заказ не должен создаваться
+        self.assertEqual(Order.objects.count(), count_before)
+
+
+    """ Проверка списания остатков """
+    def test_order_creation_decreases_product_stock(self):
+        """После создания заказа остаток блюда уменьшается."""
+
+        # Создаём категорию
+        category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        # Создаём блюдо с остатком 10 порций
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            quantity=10,
+            is_active=True
+        )
+
+        # Авторизуем покупателя
+        self.client.force_authenticate(user=self.customer)
+
+        # Создаём заказ на 3 порции
+        response = self.client.post(
+            '/api/orders/',
+            {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {
+                        'product': product.id,
+                        'quantity': 3
+                    }
+                ]
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='stock-decrease-test-123'
+        )
+
+        # Заказ должен успешно создаться
+        self.assertEqual(response.status_code, 201)
+
+        # Получаем обновлённый остаток из PostgreSQL
+        # Метод, который заново загружает данные блюда
+        # Объект product может содержать старое значение в памяти Python, если не использовать этот метод
+        product.refresh_from_db()
+
+        # Было 10, заказали 3, должно остаться 7
+        self.assertEqual(product.quantity, 7)
+
+    """ Суммарное списание одинаковых блюд """
+    def test_duplicate_product_items_decrease_stock_correctly(self):
+        """Одинаковые блюда в заказе должны суммироваться при списании."""
+
+        category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            quantity=10,
+            is_active=True
+        )
+
+        self.client.force_authenticate(user=self.customer)
+
+        response = self.client.post(
+            '/api/orders/',
+            {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {'product': product.id, 'quantity': 4},
+                    {'product': product.id, 'quantity': 3}
+                ]
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='duplicate-stock-test-123'
+        )
+
+        # Заказ успешно создаётся
+        self.assertEqual(response.status_code, 201)
+
+        # Загружаем обновлённое количество из PostgreSQL
+        product.refresh_from_db()
+
+        # Должно остаться 10 - (4 + 3) = 3
+        self.assertEqual(product.quantity, 3)
+
+    """ Защита от повторного списания блюд """
+    def test_repeated_order_does_not_decrease_stock_twice(self):
+        """Повторный запрос не должен списывать остаток дважды."""
+
+        # Создаём категорию и блюдо с запасом 10 порций
+        category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            quantity=10,
+            is_active=True
+        )
+
+        # Авторизуем покупателя
+        self.client.force_authenticate(user=self.customer)
+
+        data = {
+            'delivery_address': 'ул. Пушкина, 10',
+            'items': [
+                {
+                    'product': product.id,
+                    'quantity': 3
+                }
+            ]
+        }
+
+        # Первый запрос создаёт заказ
+        response1 = self.client.post(
+            '/api/orders/',
+            data,
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='repeat-stock-test-123'
+        )
+
+        self.assertEqual(response1.status_code, 201)
+
+        product.refresh_from_db()
+        self.assertEqual(product.quantity, 7)
+
+        # Повторяем тот же запрос с тем же ключом
+        response2 = self.client.post(
+            '/api/orders/',
+            data,
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='repeat-stock-test-123'
+        )
+
+        # Сервер возвращает уже созданный заказ
+        self.assertEqual(response2.status_code, 200)
+
+        # ID заказов должны совпадать
+        self.assertEqual(
+            response1.data['id'],
+            response2.data['id']
+        )
+
+        # Проверяем, что порции не списались повторно
+        product.refresh_from_db()
+        self.assertEqual(product.quantity, 7)
+
+        # В базе должен быть только один заказ
+        self.assertEqual(
+            Order.objects.filter(
+                customer=self.customer,
+                idempotency_key='repeat-stock-test-123'
+            ).count(),
+            1
+        )
+
 
 """ Тесты на параллельное выполнение заказов """
 class OrderConcurrencyTests(TransactionTestCase):
@@ -690,6 +945,100 @@ class OrderConcurrencyTests(TransactionTestCase):
         finally:
             # Освобождаем подключение этого потока
             close_old_connections()
+
+
+    """ Отправка заказа в отдельном потоке """
+    def send_stock_order(self, barrier, user, product_id, key):
+        """Отправляет заказ из отдельного потока."""
+
+        # У каждого потока собственное соединение с БД
+        close_old_connections()
+
+        try:
+            # Создаём отдельный API-клиент
+            client = APIClient()
+            client.force_authenticate(user=user)
+
+            data = {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {
+                        'product': product_id,
+                        'quantity': 4
+                    }
+                ]
+            }
+
+            # Ждём, пока оба потока будут готовы
+            barrier.wait(timeout=10)
+
+            # Отправляем запрос с уникальным ключом
+            response = client.post(
+                '/api/orders/',
+                data,
+                format='json',
+                HTTP_IDEMPOTENCY_KEY=key
+            )
+
+            return response.status_code
+
+        finally:
+            # Закрываем соединение этого потока
+            close_old_connections()
+
+
+    """ Защита от двойной продажи при параллельных зхаказах """
+    def test_concurrent_orders_do_not_oversell_stock(self):
+        """Два покупателя не могут купить больше доступного остатка."""
+
+        # На складе всего 5 порций
+        self.product.quantity = 5
+        self.product.save(update_fields=['quantity'])
+
+        # Создаём второго покупателя
+        second_customer = User.objects.create_user(
+            username='second_stock_customer',
+            email='second_stock@test.example',
+            password='TestPassword123!',
+            role='CUSTOMER'
+        )
+
+        # Синхронизируем начало двух запросов
+        barrier = Barrier(2)
+
+        # Отправляем два заказа одновременно
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    self.send_stock_order,
+                    barrier,
+                    self.customer,
+                    self.product.id,
+                    'stock-customer-1'
+                ),
+                executor.submit(
+                    self.send_stock_order,
+                    barrier,
+                    second_customer,
+                    self.product.id,
+                    'stock-customer-2'
+                )
+            ]
+
+            # Получаем HTTP-статусы обоих запросов
+            statuses = [future.result() for future in futures]
+
+        # Один заказ успешный, второй отклонён
+        self.assertEqual(sorted(statuses), [201, 400]) # используем sorted(), потому что не знаем заранее, какой покупатель успеет первым
+
+        # Получаем актуальный остаток из PostgreSQL
+        self.product.refresh_from_db()
+
+        # 5 - 4 = 1
+        self.assertEqual(self.product.quantity, 1)
+
+        # В базе должен быть ровно один заказ
+        self.assertEqual(Order.objects.count(), 1)
 
     """ Проверка одновременного создания заказов с одинаковым ключом """
     def test_concurrent_orders_same_key(self):
