@@ -9,10 +9,12 @@ from .models import Category, Product
 from .serializers import CategorySerializer, ProductSerializer
 
 
-class CategoryViewSet(viewsets.ReadOnlyModelViewSet): #
-    queryset = Category.objects.filter(is_active=True) # выбирает только активные категории и блюда.
-    serializer_class = CategorySerializer # определяет формат JSON.
-    permission_classes = [AllowAny] # разрешает запросы без авторизации
+class CategoryViewSet(viewsets.ModelViewSet): # ModelViewSet добавляет операции создания, редактирования и удаления
+
+    queryset = Category.objects.filter(is_active=True) # Пока показываем только активные категории
+    serializer_class = CategorySerializer # Сериализатор для преобразования данных в JSON
+    permission_classes = [IsCookOrAdminOrReadOnly] # Читать могут все, изменять — повар и администратор
+
 
 
 class ProductViewSet(viewsets.ModelViewSet):

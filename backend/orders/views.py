@@ -7,10 +7,12 @@ from rest_framework.response import Response
 from django.db.models import F
 from menu.models import Product
 from .models import Order
-from .serializers import OrderSerializer
+from .serializers import OrderSerializer, OrderStatusChangeSerializer
 from .permissions import IsOwnerOrStaff
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiTypes
 import hashlib
 import json
+
 
 """ Функция вычисления хеша """
 def calculate_request_hash(data):
@@ -37,6 +39,36 @@ class OrderViewSet(viewsets.ModelViewSet):
             customer=self.request.user,
             idempotency_key=key
         ).first()
+
+    @extend_schema(
+        summary='Создание нового заказа',
+        description=(
+                'Создаёт заказ покупателя и списывает продукты со склада. '
+                'Для защиты от повторного оформления требуется заголовок '
+                'Idempotency-Key.'
+        ),
+        parameters=[
+            OpenApiParameter(
+                name='Idempotency-Key',
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.HEADER,
+                required=True,
+                description=(
+                        'Уникальный ключ запроса длиной от 1 до 100 символов. '
+                        'При повторении запроса с тем же ключом и данными '
+                        'возвращается ранее созданный заказ.'
+                ),
+            ),
+        ],
+        request=OrderSerializer,
+        responses={
+            201: OrderSerializer,
+            200: OrderSerializer,
+            400: {'description': 'Некорректные данные заказа'},
+            409: {'description': 'Ключ уже использован с другими данными'},
+        },
+    )
+
 
     def create(self, request, *args, **kwargs):
         # Получаем ключ идемпотентности из HTTP-запросов
@@ -126,12 +158,26 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
 
     def get_queryset(self):
+        # Когда Swagger анализирует API, возвращаем
+        # базовый QuerySet только для генерации документации.
+        if getattr(self, 'swagger_fake_view', False):
+            return Order.objects.none()
+
         user = self.request.user
-        # Повара и админы видят все заказы в системе
+
+        # Неавторизованному пользователю заказы недоступны
+        if not user.is_authenticated:
+            return Order.objects.none()
+
+        # Повар и администратор видят все заказы
         if user.role in ('COOK', 'ADMIN') or user.is_superuser:
             return Order.objects.all().order_by('-created_at')
-        # Клиенты видят только свои заказы
-        return Order.objects.filter(customer=user).order_by('-created_at')
+
+        # Покупатель видит только собственные заказы
+        return Order.objects.filter(
+            customer=user
+        ).order_by('-created_at')
+
 
     def destroy(self, request, *args, **kwargs):
         order = self.get_object()
@@ -157,6 +203,23 @@ class OrderViewSet(viewsets.ModelViewSet):
                 quantity=F('quantity') + item.quantity # увеличиваем остаток непосредственно в PostgreSQL.
             )
 
+    """ Декоракор для понятного и красивого Swagger """
+    @extend_schema(
+        summary='Отмена заказа покупателем',
+        description=(
+                'Позволяет покупателю отменить собственный заказ '
+                'в статусе NEW или CONFIRMED. '
+                'При отмене продукты возвращаются на склад. '
+                'Повторная отмена запрещена.'
+        ),
+        request=None,
+        responses={
+            200: OrderSerializer,
+            400: {'description': 'Заказ нельзя отменить'},
+            403: {'description': 'Недостаточно прав'},
+            404: {'description': 'Заказ не найден'},
+        },
+    )
 
     @action(detail=True, methods=['post']) # Создаёт API-операцию /api/orders/{id}/cancel/
     @transaction.atomic
@@ -201,6 +264,26 @@ class OrderViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
+    @extend_schema(
+        summary='Изменение статуса заказа',
+        description=(
+                'Изменять статус заказа могут только повар и администратор.\n\n'
+                'Разрешённые переходы:\n'
+                '- NEW → CONFIRMED или CANCELLED\n'
+                '- CONFIRMED → COOKING или CANCELLED\n'
+                '- COOKING → READY\n'
+                '- READY → DELIVERING\n'
+                '- DELIVERING → COMPLETED\n\n'
+                'При отмене заказа продукты возвращаются на склад.'
+        ),
+        request=OrderStatusChangeSerializer,
+        responses={
+            200: OrderSerializer,
+            400: {'description': 'Недопустимый переход статуса'},
+            403: {'description': 'Недостаточно прав'},
+            404: {'description': 'Заказ не найден'},
+        },
+    )
 
     @action(detail=True, methods=['post'])
     @transaction.atomic # Статус и остатки изменяются как одна операция

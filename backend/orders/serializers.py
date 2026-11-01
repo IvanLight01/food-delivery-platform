@@ -3,7 +3,22 @@ from .models import Order, OrderItem
 from django.db import transaction
 from collections import defaultdict
 from menu.models import Product
+from drf_spectacular.utils import extend_schema_field
 
+
+class OrderStatusChangeSerializer(serializers.Serializer):
+    """Данные для изменения статуса заказа."""
+
+    status = serializers.ChoiceField(
+        choices=[
+            ('CONFIRMED', 'Подтверждён'),
+            ('COOKING', 'Готовится'),
+            ('READY', 'Готов'),
+            ('DELIVERING', 'Доставляется'),
+            ('COMPLETED', 'Завершён'),
+            ('CANCELLED', 'Отменён'),
+        ]
+    )
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -24,6 +39,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ('product_name', 'price', 'line_total')
 
+    @extend_schema_field(serializers.CharField)
     def get_line_total(self, obj):
         # obj.line_total — это @property из модели. Возвращаем как строку.
         return f'{obj.line_total:.2f}'

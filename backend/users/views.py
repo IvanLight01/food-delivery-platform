@@ -9,6 +9,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from .serializers import RegisterSerializer
 from rest_framework.views import APIView
+from rest_framework import serializers
+from drf_spectacular.utils import extend_schema
 
 
 class RegisterView(generics.CreateAPIView):
@@ -19,8 +21,19 @@ class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
 
+""" Описывает данные, которые сервер возвращает клиенту """
+class MeResponseSerializer(serializers.Serializer):
+    """Описание данных текущего пользователя для Swagger."""
+
+    username = serializers.CharField()
+    email = serializers.EmailField()
+    first_name = serializers.CharField()
+    last_name = serializers.CharField()
+    role = serializers.CharField()
+
 class MeView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated] # говорит Django - Пускать сюда только пользователя, который успешно прошёл JWT-аутентификацию.
+    serializer_class = MeResponseSerializer # сообщает DRF и Swagger, какой сериализатор соответствует этому представлению.
 
     # После проверки JWT DRF сам определяет пользователя и помещает его сюда
     def get(self, request):
@@ -33,9 +46,30 @@ class MeView(generics.RetrieveAPIView):
         })
 
 
+''' Описывает данные, которые клиент отправляет серверу '''
+class LogoutRequestSerializer(serializers.Serializer):
+    """Данные, необходимые для выхода из аккаунта."""
+
+    refresh = serializers.CharField() # Refresh-токен, который необходимо отозвать
+
+
 class LogoutView(APIView):
     # Выход доступен только авторизованному пользователю.
     permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        summary='Выход из аккаунта',
+        description='Отзывает refresh-токен текущего пользователя.',
+        request=LogoutRequestSerializer,
+        responses={
+            200: {'type': 'object', 'properties': {
+                'detail': {'type': 'string'}
+            }},
+            400: {'type': 'object', 'properties': {
+                'detail': {'type': 'string'}
+            }},
+        },
+    )
 
     def post(self, request):
         # Клиент передаёт Refresh Token в JSON.
