@@ -61,6 +61,10 @@ class IsOwnerOrStaff(BasePermission):
         if view.action == 'change_status':
             return False
 
+        # Покупатель может вызвать отмену собственного заказа
+        if view.action == 'cancel':
+            return True
+
         # Изменение и удаление — только пока заказ NEW
         if view.action in ('update', 'partial_update', 'destroy'):
             return obj.status == 'NEW'

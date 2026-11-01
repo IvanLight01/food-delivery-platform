@@ -4,6 +4,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from django.db.models import F
+from menu.models import Product
 from .models import Order
 from .serializers import OrderSerializer
 from .permissions import IsOwnerOrStaff
@@ -141,38 +143,101 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
         return super().destroy(request, *args, **kwargs)
 
+    def restore_order_stock(self, order):
+        """Возвращает списанные порции при отмене заказа."""
 
-    @action(detail=True, methods=['post'])
-    def change_status(self, request, pk=None):
-        # Получаем заказ
+        # Перебираем все позиции отменяемого заказа
+        for item in order.items.all():
+            # Возвращаем порции только для товаров
+            # с ограниченным складским остатком
+            Product.objects.filter(
+                pk=item.product_id,
+                quantity__isnull=False # не изменяем продукты с неограниченным остатком.
+            ).update(
+                quantity=F('quantity') + item.quantity # увеличиваем остаток непосредственно в PostgreSQL.
+            )
+
+
+    @action(detail=True, methods=['post']) # Создаёт API-операцию /api/orders/{id}/cancel/
+    @transaction.atomic
+    def cancel(self, request, pk=None):
+        """Покупатель отменяет собственный заказ."""
+
+        # Получаем заказ с учётом прав доступа
         order = self.get_object()
 
-        # Проверяем роль пользователя
+        # Отменять через этот метод может только владелец заказа
+        if order.customer_id != request.user.id:
+            return Response(
+                {'detail': 'Можно отменять только собственные заказы.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # Блокируем заказ от одновременных изменений
+        order = Order.objects.select_for_update().get(pk=order.pk)
+
+        # Отменять можно только до начала приготовления
+        if order.status not in (
+                Order.Status.NEW,
+                Order.Status.CONFIRMED
+        ):
+            return Response(
+                {'detail': 'Заказ уже нельзя отменить.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Возвращаем списанные порции на склад
+        self.restore_order_stock(order)
+
+        # Меняем статус заказа
+        order.status = Order.Status.CANCELLED
+        order.save(update_fields=['status', 'updated_at'])
+
+        # Возвращаем обновлённый заказ
+        serializer = self.get_serializer(order)
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK
+        )
+
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic # Статус и остатки изменяются как одна операция
+    def change_status(self, request, pk=None):
+        """Изменение статуса заказа с возвратом остатков при отмене."""
+
         user = request.user
 
+        # Только повар или администратор может менять статус
         if user.role not in ('COOK', 'ADMIN') and not user.is_superuser:
             return Response(
                 {'detail': 'Только повар или администратор может менять статус заказа.'},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        # Получаем новый статус из JSON
+        # Получаем заказ с обычной проверкой доступа ViewSet
+        order = self.get_object()
+
+        # Блокируем заказ, чтобы две отмены не прошли одновременно
+        order = Order.objects.select_for_update().get(pk=order.pk)
+
         new_status = request.data.get('status')
 
-        # Допустимые переходы
+        # Разрешённые переходы
         allowed_transitions = {
             'NEW': ['CONFIRMED', 'CANCELLED'],
             'CONFIRMED': ['COOKING', 'CANCELLED'],
-            'COOKING': ['READY', 'CANCELLED'],
+            'COOKING': ['READY'],
             'READY': ['DELIVERING'],
             'DELIVERING': ['COMPLETED'],
             'COMPLETED': [],
             'CANCELLED': [],
         }
 
-        # Проверяем допустимость перехода
         allowed = allowed_transitions.get(order.status, [])
 
+        # Проверяем, разрешён ли переход
         if new_status not in allowed:
             return Response(
                 {
@@ -183,11 +248,18 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Сохраняем новый статус
+        # Если отменяем заказ — возвращаем порции на склад
+        # Возвращаем остатки при разрешённой отмене
+        if new_status == 'CANCELLED':
+            self.restore_order_stock(order)
+
+        # Меняем статус заказа
         order.status = new_status
         order.save(update_fields=['status', 'updated_at'])
 
-        # Возвращаем обновлённый заказ
         serializer = self.get_serializer(order)
 
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(
+            serializer.data,
+            status=status.HTTP_200_OK
+        )

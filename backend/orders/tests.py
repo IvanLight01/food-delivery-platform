@@ -884,6 +884,257 @@ class OrderPermissionTests(TestCase):
         )
 
 
+    """ Отмена заказа восстанавливает остаток продукта на складе """
+    def test_cancelling_order_restores_product_stock(self):
+        """Отмена нового заказа возвращает списанные порции."""
+
+        # Создаём категорию и блюдо
+        category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            quantity=10,
+            is_active=True
+        )
+
+        # Покупатель оформляет заказ
+        self.client.force_authenticate(user=self.customer)
+
+        response = self.client.post(
+            '/api/orders/',
+            {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {'product': product.id, 'quantity': 3}
+                ]
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='cancel-stock-test-123'
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        order_id = response.data['id']
+
+        # Проверяем списание: 10 - 3 = 7
+        product.refresh_from_db()
+        self.assertEqual(product.quantity, 7)
+
+        # Для смены статуса используем администратора
+        self.client.force_authenticate(user=self.cook)
+
+        # Отменяем заказ
+        response = self.client.post(
+            f'/api/orders/{order_id}/change_status/',
+            {'status': 'CANCELLED'},
+            format='json'
+        )
+
+        # Проверяем успешную отмену
+        self.assertEqual(response.status_code, 200)
+
+        # Получаем актуальные данные
+        product.refresh_from_db()
+
+        # Остаток должен восстановиться: 7 + 3 = 10
+        self.assertEqual(product.quantity, 10)
+
+        # Статус заказа должен быть CANCELLED
+        order = Order.objects.get(id=order_id)
+        self.assertEqual(order.status, Order.Status.CANCELLED)
+
+        # Повторно пытаемся отменить тот же заказ
+        response2 = self.client.post(
+            f'/api/orders/{order_id}/change_status/',
+            {'status': 'CANCELLED'},
+            format='json'
+        )
+
+        # Повторный переход запрещён
+        self.assertEqual(response2.status_code, 400)
+
+        # Остаток не должен увеличиться второй раз
+        product.refresh_from_db()
+        self.assertEqual(product.quantity, 10)
+
+
+    """ Запрещает отменять заказ после статуса COOKING """
+    def test_cannot_cancel_order_after_cooking_started(self):
+        """Нельзя отменить заказ после начала приготовления."""
+
+        category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            quantity=10,
+            is_active=True
+        )
+
+        # Покупатель создаёт заказ
+        self.client.force_authenticate(user=self.customer)
+
+        response = self.client.post(
+            '/api/orders/',
+            {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {'product': product.id, 'quantity': 3}
+                ]
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='cooking-cancel-test-123'
+        )
+
+        self.assertEqual(response.status_code, 201)
+        order_id = response.data['id']
+
+        # Повар меняет статус заказа
+        self.client.force_authenticate(user=self.cook)
+
+        for new_status in ['CONFIRMED', 'COOKING']:
+            response = self.client.post(
+                f'/api/orders/{order_id}/change_status/',
+                {'status': new_status},
+                format='json'
+            )
+            self.assertEqual(response.status_code, 200)
+
+        # Пытаемся отменить уже готовящийся заказ
+        response = self.client.post(
+            f'/api/orders/{order_id}/change_status/',
+            {'status': 'CANCELLED'},
+            format='json'
+        )
+
+        # Отмена запрещена
+        self.assertEqual(response.status_code, 400)
+
+        # Статус должен остаться COOKING
+        order = Order.objects.get(id=order_id)
+        self.assertEqual(order.status, Order.Status.COOKING)
+
+        # Списанные порции не возвращаются
+        product.refresh_from_db()
+        self.assertEqual(product.quantity, 7)
+
+
+    """ Возможность покупателю отменить свой собственный заказ """
+    def test_customer_can_cancel_own_order(self):
+        """Покупатель может отменить свой новый заказ."""
+
+        # Создаём блюдо с остатком 10 порций
+        category = Category.objects.create(
+            name='Основные блюда'
+        )
+
+        product = Product.objects.create(
+            category=category,
+            name='Лазанья',
+            price=Decimal('900.00'),
+            quantity=10,
+            is_active=True
+        )
+
+        # Авторизуем покупателя
+        self.client.force_authenticate(user=self.customer)
+
+        # Создаём заказ на 3 порции
+        create_response = self.client.post(
+            '/api/orders/',
+            {
+                'delivery_address': 'ул. Пушкина, 10',
+                'items': [
+                    {'product': product.id, 'quantity': 3}
+                ]
+            },
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='customer-cancel-test-123'
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+        order_id = create_response.data['id']
+
+        # После создания заказа осталось 7 порций
+        product.refresh_from_db()
+        self.assertEqual(product.quantity, 7)
+
+        # Покупатель отменяет собственный заказ
+        cancel_response = self.client.post(
+            f'/api/orders/{order_id}/cancel/',
+            format='json'
+        )
+
+        # Отмена должна пройти успешно
+        self.assertEqual(cancel_response.status_code, 200)
+
+        # Статус заказа изменился
+        order = Order.objects.get(id=order_id)
+        self.assertEqual(order.status, Order.Status.CANCELLED)
+
+        # Остаток восстановился
+        product.refresh_from_db()
+        self.assertEqual(product.quantity, 10)
+
+        # Покупатель повторно пытается отменить тот же заказ
+        second_response = self.client.post(
+            f'/api/orders/{order_id}/cancel/',
+            format='json'
+        )
+
+        # Повторная отмена должна быть запрещена
+        self.assertEqual(second_response.status_code, 400)
+
+        # Проверяем, что статус остался CANCELLED
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.CANCELLED)
+
+        # Продукты не должны возвращаться на склад второй раз
+        product.refresh_from_db()
+        self.assertEqual(product.quantity, 10)
+
+
+    """ Покупатель не имеет право отменять и видеть заказ другого покупателя """
+    def test_customer_cannot_cancel_another_customers_order(self):
+        """Покупатель не может отменить чужой заказ."""
+
+        # Создаём заказ, принадлежащий первому покупателю
+        order = Order.objects.create(
+            customer=self.customer,
+            delivery_address='ул. Пушкина, 10',
+            status=Order.Status.NEW,
+        )
+
+        # Используем отдельного покупателя для этого теста.
+        # get_or_create не создаст дубликат username.
+        other_customer, created = User.objects.get_or_create(
+            username='other_customer',
+            defaults={'role': 'CUSTOMER'}
+        )
+
+        # Второй покупатель пытается отменить чужой заказ
+        self.client.force_authenticate(user=other_customer)
+
+        response = self.client.post(
+            f'/api/orders/{order.id}/cancel/',
+            format='json'
+        )
+
+        # Чужой заказ недоступен
+        self.assertEqual(response.status_code, 404)
+
+        # Статус заказа не изменился
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.NEW)
+
+
 """ Тесты на параллельное выполнение заказов """
 class OrderConcurrencyTests(TransactionTestCase):
     """
