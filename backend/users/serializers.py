@@ -59,3 +59,25 @@ class RegisterSerializer(serializers.ModelSerializer):
         user.save()
 
         return user
+
+class ProfileSerializer(serializers.ModelSerializer):
+    """Просмотр и редактирование профиля пользователя."""
+
+    class Meta:
+        model = User
+
+        fields = (
+            'username',
+            'email',
+            'first_name',
+            'last_name',
+            'phone',
+            'role',
+        )
+
+        # Эти поля нельзя менять через редактирование профиля
+        read_only_fields = (
+            'username',
+            'email',
+            'role',
+        )

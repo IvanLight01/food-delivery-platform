@@ -92,3 +92,14 @@ class Product(models.Model):
 
     def __str__(self):
         return self.name
+
+    class Meta:
+        # Второй уровень защиты от отрицательной цены
+        # PostgreSQL не позволяет записать неправильные данные ни одним способом
+        constraints = [
+            models.CheckConstraint(
+                # Цена должна быть больше или равна нулю
+                condition=models.Q(price__gte=0),
+                name='product_price_non_negative'
+            )
+        ]

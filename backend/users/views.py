@@ -4,10 +4,9 @@ from rest_framework import status
 from rest_framework import generics
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
-from .serializers import RegisterSerializer
+from .serializers import RegisterSerializer, ProfileSerializer
 from rest_framework.views import APIView
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema
@@ -31,19 +30,16 @@ class MeResponseSerializer(serializers.Serializer):
     last_name = serializers.CharField()
     role = serializers.CharField()
 
-class MeView(generics.RetrieveAPIView):
-    permission_classes = [IsAuthenticated] # говорит Django - Пускать сюда только пользователя, который успешно прошёл JWT-аутентификацию.
-    serializer_class = MeResponseSerializer # сообщает DRF и Swagger, какой сериализатор соответствует этому представлению.
+""" Клиент может использовать GET, PATCH, PUT благодаря RetrieveUpdateAPIView """
+class MeView(generics.RetrieveUpdateAPIView):
+    """Просмотр и редактирование собственного профиля."""
 
-    # После проверки JWT DRF сам определяет пользователя и помещает его сюда
-    def get(self, request):
-        return Response({
-            'username': request.user.username,
-            'email': request.user.email,
-            'first_name': request.user.first_name,
-            'last_name': request.user.last_name,
-            'role': request.user.role,
-        })
+    permission_classes = [IsAuthenticated] # Только авторизованный пользователь
+    serializer_class = ProfileSerializer # Сериализатор определяет доступные для изменения поля
+
+    def get_object(self):
+        # Возвращаем только текущего пользователя с подтвержденными JWT-токенами
+        return self.request.user
 
 
 ''' Описывает данные, которые клиент отправляет серверу '''

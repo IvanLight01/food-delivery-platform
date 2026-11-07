@@ -11,16 +11,45 @@ from .serializers import CategorySerializer, ProductSerializer
 
 class CategoryViewSet(viewsets.ModelViewSet): # ModelViewSet добавляет операции создания, редактирования и удаления
 
-    queryset = Category.objects.filter(is_active=True) # Пока показываем только активные категории
     serializer_class = CategorySerializer # Сериализатор для преобразования данных в JSON
     permission_classes = [IsCookOrAdminOrReadOnly] # Читать могут все, изменять — повар и администратор
+
+    def get_queryset(self):
+        """Определяем, какие категории видит пользователь."""
+
+        user = self.request.user
+
+        # Повар и администратор видят все категории
+        if user.is_authenticated:
+            if user.role in ('COOK', 'ADMIN') or user.is_superuser:
+                return Category.objects.all()
+
+        # Покупатель и гость видят только активные категории
+        return Category.objects.filter(is_active=True)
+
 
 
 
 class ProductViewSet(viewsets.ModelViewSet):
-    queryset = Product.objects.filter(is_active=True)
+
     serializer_class = ProductSerializer
     permission_classes = [IsCookOrAdminOrReadOnly]
+
+    def get_queryset(self):
+        """Определяем, какие блюда доступны пользователю."""
+
+        user = self.request.user
+
+        # Повар и администратор видят все блюда, включая временно скрытые и отключенные категории
+        if user.is_authenticated:
+            if user.role in ('COOK', 'ADMIN') or user.is_superuser:
+                return Product.objects.all()
+
+        # Покупатели и гости видят только активные блюда, которые находятся в активных категориях
+        return Product.objects.filter(
+            is_active=True,
+            category__is_active=True # Двойное подчёркивание __ позволяет Django обращаться к полям связанной модели
+        )
 
     @action(detail=False, methods=['get'])
     def expensive(self, request):
