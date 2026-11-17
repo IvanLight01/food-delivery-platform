@@ -55,9 +55,14 @@ export async function getProfile(accessToken) {
 
   // Проверяем, успешно ли обработан запрос
   if (!response.ok) {
-    throw new Error('Не удалось получить профиль пользователя')
-  }
+    // HTTP 401 означает, что сервер не принял авторизацию
+    if (response.status === 401) {
+      throw new Error('ACCESS_TOKEN_INVALID')
+    }
 
+    // Остальные HTTP-ошибки обрабатываем отдельно
+    throw new Error('Не удалось получить профиль')
+  }
   // Преобразуем JSON-ответ Django в объект JavaScript
   return await response.json()
 }
@@ -136,4 +141,26 @@ export async function registerUser(userData) {
 
   // Возвращаем данные зарегистрированного пользователя
   return data
+}
+
+// Получаем новый Access Token с помощью Refresh Token
+export async function refreshAccessToken(refreshToken) {
+  // Отправляем refresh-токен на backend
+  const response = await fetch('/api/auth/refresh/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      refresh: refreshToken,
+    }),
+  })
+
+  // Если обновление токена не удалось
+  if (!response.ok) {
+    throw new Error('Не удалось обновить токен авторизации')
+  }
+
+  // Возвращаем данные Django с новым access-токеном
+  return await response.json()
 }

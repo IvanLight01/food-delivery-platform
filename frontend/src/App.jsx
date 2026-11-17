@@ -4,7 +4,14 @@ import ProductList from './components/ProductList'
 import Cart from './components/Cart'
 import LoginForm from './components/LoginForm'
 import RegisterForm from './components/RegisterForm'
-import { getProducts, getProfile, logoutUser } from './services/api'
+import {
+  getProducts,
+  loginUser,
+  getProfile,
+  logoutUser,
+  registerUser,
+  refreshAccessToken,
+} from './services/api'
 import useCart from './hooks/useCart'
 
 function App() {
@@ -47,8 +54,8 @@ function App() {
 
     try {
       // Обращаемся к Django за данными пользователя
-      const userData = await getProfile(tokens.access)
-
+      // Передаём оба токена напрямую из ответа Django
+      const userData = await getProfileWithRefresh(tokens.access, tokens.refresh)
       // Записываем профиль в состояние React
       setProfile(userData)
       // Пользователь вошёл — уведомление о регистрации больше не нужно
@@ -60,6 +67,46 @@ function App() {
 
       // Передаём ошибку вызывающей функции в LoginForm.jsx
       throw err
+    }
+  }
+
+  // Обновляем Access Token с помощью Refresh Token
+  // Получаем Refresh Token через параметр функции
+  async function handleRefreshToken(currentRefreshToken) {
+    try {
+      // Используем переданный токен, а не состояние текущего рендера
+      const data = await refreshAccessToken(currentRefreshToken)
+
+      // Сохраняем новый access-токен в состоянии React
+      setAccessToken(data.access)
+
+      // Возвращаем новый токен для дальнейшего использования
+      return data.access
+    } catch (err) {
+      // Пока только сообщаем об ошибке в консоли
+      console.error('Ошибка обновления токена:', err)
+
+      // Передаём ошибку вызывающему коду
+      throw err
+    }
+  }
+
+  // Получаем профиль, при необходимости обновляя Access Token
+  async function getProfileWithRefresh(token, currentRefreshToken) {
+    try {
+      // Сначала пробуем получить профиль с текущим токеном
+      return await getProfile(token)
+    } catch (err) {
+      // Если ошибка не связана с авторизацией — передаём её дальше
+      if (err.message !== 'ACCESS_TOKEN_INVALID') {
+        throw err
+      }
+
+      // При ошибке 401 пробуем обновить Access Token
+      // Передаём Refresh Token напрямую в функцию обновления
+      const newAccessToken = await handleRefreshToken(currentRefreshToken)
+      // Повторяем запрос профиля с новым токеном
+      return await getProfile(newAccessToken)
     }
   }
 
