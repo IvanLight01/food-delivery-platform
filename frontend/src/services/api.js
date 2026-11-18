@@ -222,3 +222,56 @@ export function prepareOrderData(cartItems, deliveryAddress) {
     })),
   }
 }
+
+// Получаем историю заказов авторизованного покупателя
+export async function getOrders(accessToken) {
+  // Отправляем GET-запрос в Django
+  const response = await fetch('/api/orders/', {
+    method: 'GET',
+
+    headers: {
+      // Передаём JWT для определения покупателя
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  // Проверяем результат запроса
+  if (!response.ok) {
+    // Ошибку 401 будем обрабатывать обновлением Access Token
+    if (response.status === 401) {
+      throw new Error('ACCESS_TOKEN_INVALID')
+    }
+
+    // Другие ошибки передаём вызывающему компоненту
+    throw new Error('Не удалось загрузить историю заказов')
+  }
+
+  // Преобразуем JSON-ответ Django в массив JavaScript
+  return await response.json()
+}
+
+// Отменяем заказ текущего пользователя
+export async function cancelOrder(accessToken, orderId) {
+  const response = await fetch(`/api/orders/${orderId}/cancel/`, {
+    method: 'POST',
+    headers: {
+      // Django проверяет JWT перед отменой заказа
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  // Если Access Token истёк, сообщаем об этом вызывающему коду
+  if (response.status === 401) {
+    throw new Error('ACCESS_TOKEN_INVALID')
+  }
+
+  // Обрабатываем другие ошибки, например запрет на отмену
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+
+    throw new Error(data.detail || 'Не удалось отменить заказ')
+  }
+
+  // Возвращаем ответ Django
+  return await response.json()
+}

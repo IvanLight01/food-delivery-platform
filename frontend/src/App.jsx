@@ -5,6 +5,7 @@ import Cart from './components/Cart'
 import LoginForm from './components/LoginForm'
 import RegisterForm from './components/RegisterForm'
 import CheckoutForm from './components/CheckoutForm'
+import OrderHistory from './components/OrderHistory'
 import {
   getProducts,
   loginUser,
@@ -48,6 +49,8 @@ function App() {
   const [authMode, setAuthMode] = useState('login')
   // Сообщение после успешной регистрации
   const [registrationMessage, setRegistrationMessage] = useState('')
+  // Счётчик для обновления истории после оформления заказа
+  const [ordersRefreshKey, setOrdersRefreshKey] = useState(0)
 
   // Выполняется после успешного входа через LoginForm
   // Получаем токены от LoginForm и загружаем профиль
@@ -250,9 +253,22 @@ function App() {
         <CheckoutForm
           cartItems={cart}
           accessToken={accessToken}
-          onOrderSuccess={clearCart}
+          onOrderSuccess={() => {
+            clearCart() // Очищаем корзину после успешного заказа
+
+            setOrdersRefreshKey((prev) => prev + 1) // Сообщаем истории, что появился новый заказ
+          }}
           onRefreshToken={() => handleRefreshToken(refreshToken)}
         />
+
+        {/* Передаём токен авторизованного пользователя */}
+        {profile && (
+          <OrderHistory
+            accessToken={accessToken}
+            onRefreshToken={() => handleRefreshToken(refreshToken)}
+            refreshKey={ordersRefreshKey}
+          />
+        )}
       </main>
     </div>
   )
