@@ -1274,6 +1274,7 @@ class OrderConcurrencyTests(TransactionTestCase):
                     self.product.id,
                     'stock-customer-2'
                 )
+
             ]
 
             # Получаем HTTP-статусы обоих запросов
