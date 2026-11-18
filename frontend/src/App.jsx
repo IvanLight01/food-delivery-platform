@@ -4,6 +4,7 @@ import ProductList from './components/ProductList'
 import Cart from './components/Cart'
 import LoginForm from './components/LoginForm'
 import RegisterForm from './components/RegisterForm'
+import CheckoutForm from './components/CheckoutForm'
 import {
   getProducts,
   loginUser,
@@ -18,7 +19,14 @@ function App() {
   // Список блюд, полученных от Django
   const [products, setProducts] = useState([])
   // Получаем корзину из пользовательского хука
-  const { cart, setCart, handleAddToCart, handleDecreaseQuantity, syncCartWithProducts } = useCart()
+  const {
+    cart,
+    setCart,
+    handleAddToCart,
+    handleDecreaseQuantity,
+    syncCartWithProducts,
+    clearCart,
+  } = useCart()
   // Состояние загрузки
   const [loading, setLoading] = useState(true)
   // Сообщение об ошибке
@@ -238,6 +246,13 @@ function App() {
 
         {/* Отображаем корзину */}
         <Cart cart={cart} onIncrease={handleAddToCart} onDecrease={handleDecreaseQuantity} />
+        {/* Передаём корзину и токен авторизации в форму оформления заказа */}
+        <CheckoutForm
+          cartItems={cart}
+          accessToken={accessToken}
+          onOrderSuccess={clearCart}
+          onRefreshToken={() => handleRefreshToken(refreshToken)}
+        />
       </main>
     </div>
   )

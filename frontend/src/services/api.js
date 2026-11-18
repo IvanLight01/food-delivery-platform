@@ -164,3 +164,61 @@ export async function refreshAccessToken(refreshToken) {
   // Возвращаем данные Django с новым access-токеном
   return await response.json()
 }
+
+// Отправляем заказ на Django
+export async function createOrder(accessToken, orderData, idempotencyKey) {
+  const response = await fetch('/api/orders/', {
+    method: 'POST',
+
+    headers: {
+      // Передаём данные в формате JSON
+      'Content-Type': 'application/json',
+
+      // Подтверждаем, что пользователь авторизован
+      Authorization: `Bearer ${accessToken}`,
+
+      // Защищаемся от создания одинаковых заказов
+      'Idempotency-Key': idempotencyKey,
+    },
+
+    // Превращаем объект заказа в JSON-строку
+    body: JSON.stringify(orderData),
+  })
+
+  // Читаем ответ Django
+  const data = await response.json()
+
+  // Если Django отклонил запрос
+  if (!response.ok) {
+    // 401 понадобится для обновления Access Token
+    if (response.status === 401) {
+      throw new Error('ACCESS_TOKEN_INVALID')
+    }
+
+    // Показываем описание ошибки от Django
+    throw new Error(data.detail || JSON.stringify(data) || 'Не удалось оформить заказ')
+  }
+
+  // Возвращаем созданный или ранее сохранённый заказ
+  return data
+}
+
+// Создаём уникальный ключ для нового оформления заказа
+export function generateIdempotencyKey() {
+  // UUID практически исключает случайное совпадение ключей
+  return crypto.randomUUID()
+}
+
+// Преобразуем данные корзины в формат Django
+export function prepareOrderData(cartItems, deliveryAddress) {
+  return {
+    // Адрес, который покупатель указал при оформлении
+    delivery_address: deliveryAddress,
+
+    // Оставляем только идентификатор блюда и количество
+    items: cartItems.map((item) => ({
+      product: item.id,
+      quantity: item.quantityInCart,
+    })),
+  }
+}

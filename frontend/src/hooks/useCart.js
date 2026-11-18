@@ -77,6 +77,12 @@ function useCart() {
     })
   }
 
+  // Полностью очищаем корзину
+  function clearCart() {
+    // Устанавливаем пустой массив вместо текущих товаров
+    setCart([])
+  }
+
   // Синхронизируем корзину с актуальными данными Django
   function syncCartWithProducts(products) {
     setCart((previousCart) => {
@@ -112,7 +118,7 @@ function useCart() {
   }
 
   // Пока возвращаем состояние и функцию его изменения
-  return { cart, setCart, handleAddToCart, handleDecreaseQuantity, syncCartWithProducts }
+  return { cart, setCart, handleAddToCart, handleDecreaseQuantity, syncCartWithProducts, clearCart }
 }
 
 export default useCart
